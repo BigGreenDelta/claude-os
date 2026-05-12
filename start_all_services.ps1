@@ -21,6 +21,7 @@ $EnvFile = Join-Path $ProjectDir ".env"
 
 # Redis host — updated to WSL2 IP if Redis runs inside WSL
 $script:RedisHost = "localhost"
+$redisOk = $false
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -131,7 +132,12 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
     }
 } else {
     & $VenvPip install -r "$ProjectDir\requirements.txt" --quiet 2>&1 | Out-Null
-    Write-OK "Dependencies verified (pip)"
+    if ($LASTEXITCODE -eq 0) {
+        Write-OK "Dependencies verified (pip)"
+    } else {
+        Write-Err "pip install failed. Check your Python environment and try running setup-claude-os.ps1 again."
+        exit 1
+    }
 }
 
 # ─── 3. Redis ────────────────────────────────────────────────────────────────
@@ -147,17 +153,20 @@ if (Test-Port 6379) {
         $wslRedis = wsl which redis-server 2>$null
         if ($wslRedis) {
             Write-Info "Starting Redis via WSL..."
-            # Kill existing Redis (may be bound to loopback only) then restart with 0.0.0.0
-            wsl -e sh -c "pkill redis-server 2>/dev/null; sleep 1; redis-server --daemonize yes --bind 0.0.0.0 --protected-mode no --loglevel warning" | Out-Null
-            Start-Sleep -Seconds 2
 
-            # WSL2 uses a virtual network adapter — localhost:6379 from Windows hits Windows,
-            # not WSL. Detect WSL IP and point REDIS_HOST there so all services connect correctly.
+            # Get WSL2 IP first so we can bind Redis to it specifically
             $wslIp = (wsl hostname -I 2>$null).Trim().Split()[0]
             if ($wslIp) {
                 $script:RedisHost = $wslIp
-                Write-Info "WSL2 Redis at $($wslIp):6379 (REDIS_HOST=$wslIp)"
+                Write-Info "WSL2 IP: $wslIp — Redis will bind to 127.0.0.1 and $wslIp"
             }
+
+            # Bind Redis to loopback (WSL-internal) + WSL2 adapter IP only.
+            # Do NOT use --bind 0.0.0.0 or --protected-mode no as that exposes
+            # an unauthenticated Redis instance to the host network.
+            $bindArgs = if ($wslIp) { "127.0.0.1 $wslIp" } else { "127.0.0.1" }
+            wsl -e sh -c "pkill redis-server 2>/dev/null; sleep 1; redis-server --daemonize yes --bind $bindArgs --loglevel warning" | Out-Null
+            Start-Sleep -Seconds 2
 
             # Verify connectivity via WSL IP
             $socket = New-Object System.Net.Sockets.TcpClient
@@ -195,10 +204,10 @@ if (Test-Port 6379) {
 Write-Host "  [4/5] Starting RQ workers..." -ForegroundColor White
 
 if ($redisOk) {
-    # Stop existing RQ worker processes
-    Get-Process -Name "python" -ErrorAction SilentlyContinue |
+    # Stop existing RQ worker processes (Get-CimInstance exposes CommandLine; Get-Process does not)
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like "*rq*worker*" } |
-        Stop-Process -Force -ErrorAction SilentlyContinue
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
     $workersLog = Join-Path $LogsDir "rq_workers.log"
 

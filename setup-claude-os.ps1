@@ -138,6 +138,17 @@ function Install-UV {
 
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         Write-Info "Trying UV installer script..."
+        Write-Warn "This will download and execute a remote script from https://astral.sh/uv/install.ps1"
+        if (-not $Force) {
+            $confirm = Read-Host "  Proceed? [Y/n]"
+            if ($confirm -and $confirm -notmatch "^[Yy]") {
+                Write-Err "UV install skipped. Please install UV manually:"
+                Write-Host "    winget install astral-sh.uv" -ForegroundColor Cyan
+                Write-Host "    - or -" -ForegroundColor DarkGray
+                Write-Host "    irm https://astral.sh/uv/install.ps1 | iex" -ForegroundColor Cyan
+                exit 1
+            }
+        }
         try {
             $installScript = (Invoke-WebRequest "https://astral.sh/uv/install.ps1" -UseBasicParsing).Content
             Invoke-Expression $installScript 2>&1 | Out-Null
@@ -399,8 +410,8 @@ function Setup-Redis {
         return
     }
 
-    # Check for redis-cli (native Windows Redis or Memurai)
-    $hasRedis = Get-Command redis-cli -ErrorAction SilentlyContinue
+    # Check for redis-server (native Windows Redis or Memurai)
+    $hasRedis = Get-Command redis-server -ErrorAction SilentlyContinue
     $hasMemurai = Get-Command memurai-cli -ErrorAction SilentlyContinue
 
     if ($hasRedis) {

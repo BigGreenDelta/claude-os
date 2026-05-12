@@ -2691,7 +2691,7 @@ class ServiceControlRequest(BaseModel):
     action: str  # start, stop, restart
 
 
-def check_process_running(process_name: str) -> dict:
+def check_process_running(process_name: str, process_cache: list | None = None) -> dict:
     """
     Check if a process is running by name (cross-platform via psutil).
 
@@ -2700,27 +2700,32 @@ def check_process_running(process_name: str) -> dict:
     handles OS differences like ``rq worker`` (Linux) vs ``rq.exe worker``
     (Windows) without needing separate call sites.
 
+    ``process_cache`` is an optional pre-fetched list of psutil process info
+    dicts (from ``_snapshot_processes``).  Pass it when calling this function
+    multiple times in the same request to avoid re-iterating all processes.
+
     Returns:
         dict with status, pid, memory, cpu
     """
     try:
         import psutil
         keywords = process_name.lower().split()
-        for proc in psutil.process_iter(["pid", "name", "cmdline", "cpu_percent", "memory_percent"]):
-            try:
-                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
-                proc_name = (proc.info.get("name") or "").lower()
-                text = f"{proc_name} {cmdline}"
-                if all(kw in text for kw in keywords):
-                    return {
-                        "running": True,
-                        "pid": proc.info["pid"],
-                        "cpu": proc.info.get("cpu_percent") or 0.0,
-                        "memory": proc.info.get("memory_percent") or 0.0,
-                        "status": "running"
-                    }
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+
+        if process_cache is None:
+            process_cache = _snapshot_processes()
+
+        for info in process_cache:
+            cmdline = info.get("cmdline", "")
+            proc_name = info.get("name", "")
+            text = f"{proc_name} {cmdline}"
+            if all(kw in text for kw in keywords):
+                return {
+                    "running": True,
+                    "pid": info["pid"],
+                    "cpu": info.get("cpu_percent") or 0.0,
+                    "memory": info.get("memory_percent") or 0.0,
+                    "status": "running"
+                }
         return {
             "running": False,
             "pid": None,
@@ -2738,6 +2743,28 @@ def check_process_running(process_name: str) -> dict:
             "status": "unknown",
             "error": str(e)
         }
+
+
+def _snapshot_processes() -> list:
+    """Return a lightweight snapshot of all running processes for one status check."""
+    try:
+        import psutil
+        snapshot = []
+        for proc in psutil.process_iter(["pid", "name", "cmdline", "cpu_percent", "memory_percent"]):
+            try:
+                info = proc.info
+                snapshot.append({
+                    "pid": info["pid"],
+                    "name": (info.get("name") or "").lower(),
+                    "cmdline": " ".join(info.get("cmdline") or []).lower(),
+                    "cpu_percent": info.get("cpu_percent") or 0.0,
+                    "memory_percent": info.get("memory_percent") or 0.0,
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return snapshot
+    except Exception:
+        return []
 
 
 def check_port_listening(port: int) -> bool:
@@ -2780,6 +2807,9 @@ async def api_get_services_status():
     """
     services = []
 
+    # Snapshot all processes once to avoid re-iterating for each service check
+    proc_cache = _snapshot_processes()
+
     # 1. MCP Server (always running since we're responding)
     mcp_status = {
         "name": "MCP Server",
@@ -2796,7 +2826,7 @@ async def api_get_services_status():
 
     # 2. Frontend (Vite dev server on port 5173)
     frontend_port = 5173
-    frontend_process = check_process_running("vite")
+    frontend_process = check_process_running("vite", proc_cache)
     frontend_status = {
         "name": "Frontend",
         "type": "frontend",
@@ -2812,7 +2842,7 @@ async def api_get_services_status():
 
     # 3. Redis (port 6379)
     redis_port = 6379
-    redis_process = check_process_running("redis-server")
+    redis_process = check_process_running("redis-server", proc_cache)
     redis_status = {
         "name": "Redis",
         "type": "redis",
@@ -2827,7 +2857,7 @@ async def api_get_services_status():
     services.append(redis_status)
 
     # 4. RQ Worker
-    rq_process = check_process_running("rq worker")
+    rq_process = check_process_running("rq worker", proc_cache)
     rq_status = {
         "name": "RQ Worker",
         "type": "rq_worker",
@@ -2850,7 +2880,7 @@ async def api_get_services_status():
     except:
         ollama_running = check_port_listening(ollama_port)
 
-    ollama_process = check_process_running("ollama")
+    ollama_process = check_process_running("ollama", proc_cache)
     ollama_status = {
         "name": "Ollama",
         "type": "ollama",

@@ -1,5 +1,6 @@
 #Requires -Version 5.1
 # Claude OS - Start MCP Server (Windows)
+# Starts the FastAPI HTTP server (mcp_server/server.py) on port 8051.
 # Usage: .\start.ps1
 # For full services (Redis, workers, frontend), use start_all_services.ps1
 
@@ -8,7 +9,8 @@ $ErrorActionPreference = "Stop"
 
 $ProjectDir = $PSScriptRoot
 $VenvPython = Join-Path $ProjectDir "venv\Scripts\python.exe"
-$McpServer = Join-Path $ProjectDir "mcp_server\claude_code_mcp.py"
+$McpServer = Join-Path $ProjectDir "mcp_server\server.py"
+$McpServerDir = Join-Path $ProjectDir "mcp_server"
 $DataDir = Join-Path $ProjectDir "data"
 $LogsDir = Join-Path $ProjectDir "logs"
 
@@ -55,4 +57,9 @@ Write-Host ""
 
 $env:SQLITE_DB_PATH = Join-Path $DataDir "claude-os.db"
 
-& $VenvPython $McpServer
+Push-Location $McpServerDir
+try {
+    & $VenvPython server.py
+} finally {
+    Pop-Location
+}
