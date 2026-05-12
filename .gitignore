@@ -66,6 +66,9 @@ data/postgres/
 # Docker
 .dockerignore
 
+# Redis
+*.rdb
+
 # Logs
 *.log
 logs/

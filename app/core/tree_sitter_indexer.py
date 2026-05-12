@@ -217,6 +217,9 @@ class TreeSitterIndexer:
         "node_modules", "venv", ".venv", "vendor", "build", "dist",
         ".git", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache",
         "coverage", ".coverage", "htmlcov", ".tox", ".eggs",
+        # Unreal Engine generated/binary dirs
+        "Binaries", "Intermediate", "DerivedDataCache", "Saved",
+        "Content",
     }
 
     def __init__(self, cache_path: Optional[str] = None):
@@ -311,7 +314,8 @@ class TreeSitterIndexer:
             tags.extend(self._extract_ruby_tags(tree, code, relative_path))
         elif language in ["javascript", "typescript"]:
             tags.extend(self._extract_js_tags(tree, code, relative_path))
-        # Add more languages as needed
+        elif language == "cpp":
+            tags.extend(self._extract_cpp_tags(tree, code, relative_path))
 
         return tags
 
@@ -464,6 +468,38 @@ class TreeSitterIndexer:
                     ))
 
             # Recurse
+            for child in node.children:
+                traverse(child)
+
+        traverse(tree.root_node)
+        return tags
+
+    def _extract_cpp_tags(self, tree, code: bytes, file_path: str) -> List[Tag]:
+        """Extract C++ classes, structs, functions, and methods."""
+        tags = []
+
+        def traverse(node):
+            if node.type in ("class_specifier", "struct_specifier"):
+                name_node = node.child_by_field_name("name")
+                if name_node:
+                    name = code[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
+                    kind = "class" if node.type == "class_specifier" else "struct"
+                    tags.append(Tag(file=file_path, name=name, kind=kind, line=node.start_point[0] + 1, signature=f"{kind} {name}"))
+
+            elif node.type == "function_definition":
+                declarator = node.child_by_field_name("declarator")
+                while declarator and declarator.type in ("pointer_declarator", "reference_declarator"):
+                    declarator = declarator.child_by_field_name("declarator")
+                if declarator:
+                    name_node = None
+                    if declarator.type == "function_declarator":
+                        name_node = declarator.child_by_field_name("declarator")
+                    elif declarator.type == "qualified_identifier":
+                        name_node = declarator
+                    if name_node:
+                        name = code[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
+                        tags.append(Tag(file=file_path, name=name, kind="function", line=node.start_point[0] + 1, signature=name))
+
             for child in node.children:
                 traverse(child)
 

@@ -2693,44 +2693,34 @@ class ServiceControlRequest(BaseModel):
 
 def check_process_running(process_name: str) -> dict:
     """
-    Check if a process is running by name.
+    Check if a process is running by name (cross-platform via psutil).
+
+    ``process_name`` may contain multiple space-separated keywords; ALL must
+    appear somewhere in the combined ``<proc_name> <cmdline>`` string.  This
+    handles OS differences like ``rq worker`` (Linux) vs ``rq.exe worker``
+    (Windows) without needing separate call sites.
 
     Returns:
         dict with status, pid, memory, cpu
     """
     try:
-        # Use pgrep to find process
-        result = subprocess.run(
-            ["pgrep", "-f", process_name],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-
-        if result.returncode == 0 and result.stdout.strip():
-            pids = result.stdout.strip().split('\n')
-            pid = pids[0]  # Get first matching PID
-
-            # Get process stats using ps
-            ps_result = subprocess.run(
-                ["ps", "-p", pid, "-o", "pid,%cpu,%mem,command"],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-
-            if ps_result.returncode == 0:
-                lines = ps_result.stdout.strip().split('\n')
-                if len(lines) > 1:
-                    parts = lines[1].split(None, 3)
+        import psutil
+        keywords = process_name.lower().split()
+        for proc in psutil.process_iter(["pid", "name", "cmdline", "cpu_percent", "memory_percent"]):
+            try:
+                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+                proc_name = (proc.info.get("name") or "").lower()
+                text = f"{proc_name} {cmdline}"
+                if all(kw in text for kw in keywords):
                     return {
                         "running": True,
-                        "pid": int(pid),
-                        "cpu": float(parts[1]) if len(parts) > 1 else 0.0,
-                        "memory": float(parts[2]) if len(parts) > 2 else 0.0,
+                        "pid": proc.info["pid"],
+                        "cpu": proc.info.get("cpu_percent") or 0.0,
+                        "memory": proc.info.get("memory_percent") or 0.0,
                         "status": "running"
                     }
-
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
         return {
             "running": False,
             "pid": None,
@@ -2751,19 +2741,28 @@ def check_process_running(process_name: str) -> dict:
 
 
 def check_port_listening(port: int) -> bool:
-    """Check if a port is being listened on."""
+    """
+    Check if something is accepting connections on *port* (cross-platform).
+
+    Tries 127.0.0.1 first (covers native services and WSL2 port-forwarded
+    services).  Falls back to a psutil scan so the result is consistent
+    with how the old lsof/netstat implementation worked on Linux.
+    """
+    import socket
     try:
-        # Use netstat or ss to check if port is listening
-        result = subprocess.run(
-            ["sh", "-c", f"lsof -i :{port} -t || netstat -tuln | grep :{port} || ss -tuln | grep :{port}"],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-        return result.returncode == 0 and result.stdout.strip() != ""
-    except Exception as e:
-        logger.warning(f"Failed to check port {port}: {e}")
-        return False
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except (OSError, ConnectionRefusedError):
+        pass
+    # psutil fallback: catches services bound to 0.0.0.0 / specific IPs
+    try:
+        import psutil
+        for conn in psutil.net_connections(kind="tcp"):
+            if conn.laddr.port == port and conn.status == psutil.CONN_LISTEN:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 @app.get("/api/services/status")
