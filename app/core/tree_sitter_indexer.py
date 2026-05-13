@@ -17,6 +17,7 @@ Performance: 10,000 files indexed in ~30 seconds
 Author: Claude (for Claude!)
 """
 
+import fnmatch
 import logging
 import os
 import sqlite3
@@ -213,12 +214,16 @@ class TreeSitterIndexer:
         ".m": "objective_c",
     }
 
-    # Directories to skip (default set — can be extended via extra_skip_dirs)
+    # Directories to skip (default set — can be extended via extra_skip_dirs).
+    # Supports fnmatch glob patterns, e.g. "Build*", "*.cache".
     SKIP_DIRS = {
         "node_modules", "venv", ".venv", "vendor", "build", "dist",
         ".git", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache",
         "coverage", ".coverage", "htmlcov", ".tox", ".eggs",
     }
+
+    # File name patterns to skip (fnmatch), e.g. "*.generated.h", "*.dep.json".
+    SKIP_FILE_PATTERNS: Set[str] = set()
 
     def __init__(self, cache_path: Optional[str] = None, extra_skip_dirs: Optional[set] = None):
         """
@@ -226,9 +231,9 @@ class TreeSitterIndexer:
 
         Args:
             cache_path: Path to SQLite cache file
-            extra_skip_dirs: Additional directory names to skip during indexing.
+            extra_skip_dirs: Additional directory names/patterns to skip during indexing.
+                Supports fnmatch glob patterns (e.g. {"Binaries", "Content", "*.cache"}).
                 Merged with the default SKIP_DIRS at construction time.
-                Example: extra_skip_dirs={"Binaries", "Content"}
         """
         if not TREE_SITTER_AVAILABLE:
             raise RuntimeError("tree_sitter_languages not installed. Run: pip install tree_sitter_languages")
@@ -236,6 +241,15 @@ class TreeSitterIndexer:
         self.cache = TreeSitterCache(cache_path) if cache_path else None
         if extra_skip_dirs:
             self.SKIP_DIRS = self.SKIP_DIRS | extra_skip_dirs
+        self.SKIP_FILE_PATTERNS = set(self.__class__.SKIP_FILE_PATTERNS)
+
+    def _should_skip_dir(self, dirname: str) -> bool:
+        """Return True if the directory name matches any skip pattern (exact or fnmatch glob)."""
+        return any(fnmatch.fnmatch(dirname, pat) for pat in self.SKIP_DIRS)
+
+    def _should_skip_file(self, filename: str) -> bool:
+        """Return True if the file name matches any skip_file_patterns glob."""
+        return any(fnmatch.fnmatch(filename, pat) for pat in self.SKIP_FILE_PATTERNS)
 
     def parse_file(self, file_path: Path, project_root: Path) -> List[Tag]:
         """
@@ -679,10 +693,14 @@ class TreeSitterIndexer:
             try:
                 with open(project_config_path) as _f:
                     _cfg = json.load(_f)
-                _extra = set(_cfg.get("skip_dirs", []))
-                if _extra:
-                    self.SKIP_DIRS = self.SKIP_DIRS | _extra
-                    logger.info(f"Loaded project config from {project_config_path}; extra skip_dirs: {_extra}")
+                _extra_dirs = set(_cfg.get("skip_dirs", []))
+                if _extra_dirs:
+                    self.SKIP_DIRS = self.SKIP_DIRS | _extra_dirs
+                    logger.info(f"Loaded project config from {project_config_path}; extra skip_dirs: {_extra_dirs}")
+                _extra_files = set(_cfg.get("skip_file_patterns", []))
+                if _extra_files:
+                    self.SKIP_FILE_PATTERNS = self.SKIP_FILE_PATTERNS | _extra_files
+                    logger.info(f"Loaded skip_file_patterns: {_extra_files}")
             except Exception as _e:
                 logger.warning(f"Could not load project config at {project_config_path}: {_e}")
 
@@ -692,10 +710,14 @@ class TreeSitterIndexer:
 
         # Find all files — prune skip_dirs in-place so os.walk never descends into them
         for dirpath, dirs, files in os.walk(project_root):
-            # Prune: remove skipped dir names before os.walk recurses into them
-            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
+            # Prune: remove skipped dir names before os.walk recurses (supports glob patterns)
+            dirs[:] = [d for d in dirs if not self._should_skip_dir(d)]
 
             for filename in files:
+                # Skip files matching skip_file_patterns (e.g. "*.generated.h")
+                if self._should_skip_file(filename):
+                    continue
+
                 file_path = Path(dirpath) / filename
 
                 # Skip non-code files
