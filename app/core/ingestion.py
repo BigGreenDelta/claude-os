@@ -7,6 +7,8 @@ import fnmatch
 import hashlib
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
@@ -419,6 +421,7 @@ def ingest_directory(
     dir_path: str,
     collection_name: str,
     progress_callback: Optional[Callable[[int, str], None]] = None,
+    num_workers: int = 1,
 ) -> List[Dict[str, any]]:
     """
     Recursively ingest all supported files from a directory.
@@ -429,6 +432,7 @@ def ingest_directory(
         dir_path: Path to directory
         collection_name: Target collection name
         progress_callback: Optional callable(progress_pct, message) for progress updates
+        num_workers: Number of parallel workers for embedding (default 1 = sequential)
 
     Returns:
         List of ingestion results
@@ -459,15 +463,41 @@ def ingest_directory(
             all_files.append(file_path)
 
     total = len(all_files)
-    logger.info(f"Ingesting {total} files into {collection_name}")
+    logger.info(f"Ingesting {total} files into {collection_name} (workers={num_workers})")
 
-    for i, file_path in enumerate(all_files):
-        result = ingest_file(str(file_path), collection_name, file_path.name)
-        results.append(result)
+    if num_workers > 1:
+        # Parallel ingestion via ThreadPoolExecutor
+        lock = threading.Lock()
+        completed_count = [0]  # mutable container for thread-safe counter
 
-        if progress_callback and (((i + 1) % 50 == 0) or (i + 1) == total):
-            pct = 10 + int(((i + 1) / total) * 78)
-            progress_callback(pct, f"Indexed {i + 1}/{total} files...")
+        def _ingest_with_progress(fp: Path) -> Dict:
+            result = ingest_file(str(fp), collection_name, fp.name)
+            with lock:
+                completed_count[0] += 1
+                done = completed_count[0]
+                if progress_callback and (done % 50 == 0 or done == total):
+                    pct = 10 + int((done / total) * 78)
+                    progress_callback(pct, f"Indexed {done}/{total} files...")
+            return result
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(_ingest_with_progress, fp): fp for fp in all_files}
+            for future in as_completed(futures):
+                try:
+                    results.append(future.result())
+                except Exception as e:
+                    fp = futures[future]
+                    logger.warning(f"Worker failed for {fp}: {e}")
+                    results.append({"status": "error", "filename": fp.name, "error": str(e)})
+    else:
+        # Sequential ingestion (default)
+        for i, file_path in enumerate(all_files):
+            result = ingest_file(str(file_path), collection_name, file_path.name)
+            results.append(result)
+
+            if progress_callback and (((i + 1) % 50 == 0) or (i + 1) == total):
+                pct = 10 + int(((i + 1) / total) * 78)
+                progress_callback(pct, f"Indexed {i + 1}/{total} files...")
 
     # Stale cleanup: remove docs for files no longer in the project/filter set
     current_paths = {str(f) for f in all_files}

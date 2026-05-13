@@ -28,6 +28,7 @@ export default function KBManagement({ kbName, kbSlug, kbType, projectId, projec
   const [showIndexModal, setShowIndexModal] = useState(false);
   const [indexFull, setIndexFull] = useState(true);
   const [clearBefore, setClearBefore] = useState(false);
+  const [numWorkers, setNumWorkers] = useState(1);
   const [indexStatus, setIndexStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
   const [indexMessage, setIndexMessage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -51,6 +52,7 @@ export default function KBManagement({ kbName, kbSlug, kbType, projectId, projec
           project_path: projectPath,
           selective: !indexFull,
           clear_before: clearBefore,
+          num_workers: numWorkers,
         });
         setIndexMessage(`${indexFull ? 'Full' : 'Selective'} semantic indexing started.`);
       }
@@ -408,7 +410,7 @@ export default function KBManagement({ kbName, kbSlug, kbType, projectId, projec
               </div>
               {isIndexable && (
                 <button
-                  onClick={() => { setShowIndexModal(true); setIndexStatus('idle'); setIndexMessage(''); setClearBefore(false); }}
+                  onClick={() => { setShowIndexModal(true); setIndexStatus('idle'); setIndexMessage(''); setClearBefore(false); setNumWorkers(1); }}
                   className="flex items-center gap-2 px-3 py-1.5 bg-electric-teal/20 hover:bg-electric-teal/30 border border-electric-teal/50 text-electric-teal text-sm font-semibold rounded-lg transition-colors flex-shrink-0 self-start"
                 >
                   <Play className="w-4 h-4" />
@@ -480,6 +482,26 @@ export default function KBManagement({ kbName, kbSlug, kbType, projectId, projec
                         <span className="block text-xs text-light-grey/50 mt-0.5">Removes all existing docs first. Forces re-embedding of every file (slower).</span>
                       </span>
                     </label>
+
+                    {/* Parallel workers */}
+                    <div className="mb-5">
+                      <label className="block text-sm text-light-grey mb-2">
+                        Parallel workers
+                        <span className="ml-2 text-xs text-light-grey/50">(1 = sequential)</span>
+                      </label>
+                      <div className="flex items-center gap-3">
+                        {[1, 2, 4, 8].map(n => (
+                          <button
+                            key={n}
+                            onClick={() => setNumWorkers(n)}
+                            className={`px-3 py-1 rounded text-sm font-mono transition-colors ${numWorkers === n ? 'bg-electric-teal/20 text-electric-teal border border-electric-teal/50' : 'bg-white/5 text-light-grey/60 border border-white/10 hover:bg-white/10'}`}
+                          >{n}</button>
+                        ))}
+                      </div>
+                      <p className="text-xs text-light-grey/50 mt-2">
+                        Higher values speed up indexing by running multiple Ollama embedding calls in parallel.
+                      </p>
+                    </div>
                   </>
                 )}
 

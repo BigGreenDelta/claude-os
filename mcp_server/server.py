@@ -884,6 +884,7 @@ class SemanticIndexRequest(BaseModel):
     personalization: Optional[Dict[str, float]] = None
     background: bool = True  # Run in background (True) or sync/blocking (False)
     clear_before: bool = False  # Wipe all existing docs in KB before indexing
+    num_workers: int = 1  # Number of parallel embedding workers (1 = sequential)
 
 
 @app.post("/api/kb/{kb_name}/index-structural")
@@ -989,7 +990,7 @@ async def api_index_structural(kb_name: str, request: StructuralIndexRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _run_semantic_indexing_background(job_id: str, kb_name: str, project_path: str, selective: bool, personalization: dict = None, clear_before: bool = False):
+def _run_semantic_indexing_background(job_id: str, kb_name: str, project_path: str, selective: bool, personalization: dict = None, clear_before: bool = False, num_workers: int = 1):
     """
     Background worker for semantic indexing. Runs in a separate thread to avoid blocking.
     Updates INDEXING_JOBS with progress.
@@ -1046,25 +1047,58 @@ def _run_semantic_indexing_background(job_id: str, kb_name: str, project_path: s
             total_files = len(all_files)
 
             update_job("running", 10, f"Found {total_files} files to index (top 20% + docs)")
-            logger.info(f"[Job {job_id}] Selective indexing: {total_files} files")
+            logger.info(f"[Job {job_id}] Selective indexing: {total_files} files (workers={num_workers})")
 
             # Ingest selected files only
             results = []
-            for i, file_rel_path in enumerate(all_files):
-                file_path = Path(project_path) / file_rel_path
-                if file_path.exists() and file_path.is_file():
+            if num_workers > 1:
+                import threading as _threading
+                from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _as_completed
+                lock = _threading.Lock()
+                completed_count = [0]
+
+                def _ingest_selective(file_rel_path):
+                    file_path = Path(project_path) / file_rel_path
+                    if not file_path.exists() or not file_path.is_file():
+                        return {"status": "skipped", "file": str(file_rel_path)}
                     try:
-                        result = ingest_file(str(file_path), kb_name, str(file_rel_path))
-                        results.append({"status": "success", "file": str(file_rel_path)})
+                        ingest_file(str(file_path), kb_name, str(file_rel_path))
+                        res = {"status": "success", "file": str(file_rel_path)}
                         logger.debug(f"[Job {job_id}] Ingested: {file_rel_path}")
                     except Exception as e:
                         logger.warning(f"[Job {job_id}] Failed to ingest {file_rel_path}: {e}")
-                        results.append({"status": "error", "file": str(file_rel_path), "error": str(e)})
+                        res = {"status": "error", "file": str(file_rel_path), "error": str(e)}
+                    with lock:
+                        completed_count[0] += 1
+                        done = completed_count[0]
+                        if done % 5 == 0 or done == total_files:
+                            progress = 10 + int((done / total_files) * 90)
+                            update_job("running", progress, f"Indexed {done}/{total_files} files...")
+                    return res
 
-                # Update progress every 5 files or at end
-                if (i + 1) % 5 == 0 or (i + 1) == total_files:
-                    progress = 10 + int(((i + 1) / total_files) * 90)
-                    update_job("running", progress, f"Indexed {i + 1}/{total_files} files...")
+                with _TPE(max_workers=num_workers) as executor:
+                    futures = {executor.submit(_ingest_selective, f): f for f in all_files}
+                    for future in _as_completed(futures):
+                        try:
+                            results.append(future.result())
+                        except Exception as e:
+                            results.append({"status": "error", "file": str(futures[future]), "error": str(e)})
+            else:
+                for i, file_rel_path in enumerate(all_files):
+                    file_path = Path(project_path) / file_rel_path
+                    if file_path.exists() and file_path.is_file():
+                        try:
+                            result = ingest_file(str(file_path), kb_name, str(file_rel_path))
+                            results.append({"status": "success", "file": str(file_rel_path)})
+                            logger.debug(f"[Job {job_id}] Ingested: {file_rel_path}")
+                        except Exception as e:
+                            logger.warning(f"[Job {job_id}] Failed to ingest {file_rel_path}: {e}")
+                            results.append({"status": "error", "file": str(file_rel_path), "error": str(e)})
+
+                    # Update progress every 5 files or at end
+                    if (i + 1) % 5 == 0 or (i + 1) == total_files:
+                        progress = 10 + int(((i + 1) / total_files) * 90)
+                        update_job("running", progress, f"Indexed {i + 1}/{total_files} files...")
 
             successes = [r for r in results if r.get("status") == "success"]
             elapsed = time.time() - start_time
@@ -1079,6 +1113,7 @@ def _run_semantic_indexing_background(job_id: str, kb_name: str, project_path: s
                 project_path,
                 kb_name,
                 progress_callback=lambda pct, msg: update_job("running", pct, msg),
+                num_workers=num_workers,
             )
             successes = [r for r in results if r.get("status") == "success"]
 
@@ -1091,7 +1126,7 @@ def _run_semantic_indexing_background(job_id: str, kb_name: str, project_path: s
         update_job("failed", 0, "", str(e))
 
 
-def _run_semantic_indexing_sync(kb_name: str, project_path: str, selective: bool, personalization: dict = None, clear_before: bool = False) -> dict:
+def _run_semantic_indexing_sync(kb_name: str, project_path: str, selective: bool, personalization: dict = None, clear_before: bool = False, num_workers: int = 1) -> dict:
     """
     Synchronous semantic indexing for backward compatibility.
     WARNING: This blocks the server! Use background=true for production.
@@ -1126,14 +1161,35 @@ def _run_semantic_indexing_sync(kb_name: str, project_path: str, selective: bool
         all_files = list(set(important_files + [str(f.relative_to(project_path)) for f in doc_files]))
 
         results = []
-        for file_rel_path in all_files:
-            file_path = Path(project_path) / file_rel_path
-            if file_path.exists() and file_path.is_file():
+        if num_workers > 1:
+            from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _as_completed
+
+            def _ingest_sel(file_rel_path):
+                file_path = Path(project_path) / file_rel_path
+                if not file_path.exists() or not file_path.is_file():
+                    return {"status": "skipped", "file": str(file_rel_path)}
                 try:
-                    result = ingest_file(str(file_path), kb_name, str(file_rel_path))
-                    results.append({"status": "success", "file": str(file_rel_path)})
+                    ingest_file(str(file_path), kb_name, str(file_rel_path))
+                    return {"status": "success", "file": str(file_rel_path)}
                 except Exception as e:
-                    results.append({"status": "error", "file": str(file_rel_path), "error": str(e)})
+                    return {"status": "error", "file": str(file_rel_path), "error": str(e)}
+
+            with _TPE(max_workers=num_workers) as executor:
+                futures = {executor.submit(_ingest_sel, f): f for f in all_files}
+                for future in _as_completed(futures):
+                    try:
+                        results.append(future.result())
+                    except Exception as e:
+                        results.append({"status": "error", "file": str(futures[future]), "error": str(e)})
+        else:
+            for file_rel_path in all_files:
+                file_path = Path(project_path) / file_rel_path
+                if file_path.exists() and file_path.is_file():
+                    try:
+                        result = ingest_file(str(file_path), kb_name, str(file_rel_path))
+                        results.append({"status": "success", "file": str(file_rel_path)})
+                    except Exception as e:
+                        results.append({"status": "error", "file": str(file_rel_path), "error": str(e)})
 
         successes = [r for r in results if r.get("status") == "success"]
         elapsed = time.time() - start_time
@@ -1148,7 +1204,7 @@ def _run_semantic_indexing_sync(kb_name: str, project_path: str, selective: bool
             "message": f"Selective semantic indexing complete: {len(successes)}/{len(all_files)} files indexed"
         }
     else:
-        results = ingest_directory(project_path, kb_name)
+        results = ingest_directory(project_path, kb_name, num_workers=num_workers)
         successes = [r for r in results if r.get("status") == "success"]
         elapsed = time.time() - start_time
 
@@ -1197,7 +1253,8 @@ async def api_index_semantic(kb_name: str, request: SemanticIndexRequest, backgr
                 request.project_path,
                 request.selective,
                 request.personalization,
-                request.clear_before
+                request.clear_before,
+                request.num_workers
             )
             return result
         except Exception as e:
@@ -1229,7 +1286,8 @@ async def api_index_semantic(kb_name: str, request: SemanticIndexRequest, backgr
         request.project_path,
         request.selective,
         request.personalization,
-        request.clear_before
+        request.clear_before,
+        request.num_workers
     )
 
     logger.info(f"Queued semantic indexing job {job_id} for {kb_name}")
