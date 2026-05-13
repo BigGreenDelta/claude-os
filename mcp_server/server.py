@@ -1386,8 +1386,8 @@ async def api_create_project(request: ProjectRequest):
         )
         logger.info(f"Created project: {request.name}")
 
-        # Create 4 required MCPs
-        mcp_types = ["knowledge_docs", "project_profile", "project_index", "project_memories"]
+        # Create 5 required MCPs (code_structure added in v1.1)
+        mcp_types = ["knowledge_docs", "project_profile", "project_index", "project_memories", "code_structure"]
         mcps_created = []
 
         for i, mcp_type in enumerate(mcp_types):
@@ -1417,7 +1417,7 @@ async def api_create_project(request: ProjectRequest):
         return {
             "project": project,
             "mcps": mcps_created,
-            "message": f"Project '{request.name}' created with 4 required MCPs"
+            "message": f"Project '{request.name}' created with 5 required MCPs"
         }
 
     except ValueError as e:
