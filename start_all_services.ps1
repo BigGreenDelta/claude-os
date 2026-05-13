@@ -174,6 +174,9 @@ if (Test-Port 6379) {
             wsl -e sh -c "pkill redis-server 2>/dev/null; sleep 1; redis-server --daemonize yes --bind $bindArgs --loglevel warning" | Out-Null
             Start-Sleep -Seconds 2
 
+            # Disable protected mode so Windows-side clients (RQ workers, MCP server) can connect
+            wsl -e sh -c "redis-cli -h 127.0.0.1 CONFIG SET protected-mode no" | Out-Null
+
             # Verify connectivity via WSL IP
             $socket = New-Object System.Net.Sockets.TcpClient
             try {
