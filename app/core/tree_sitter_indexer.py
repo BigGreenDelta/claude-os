@@ -220,6 +220,7 @@ class TreeSitterIndexer:
         "node_modules", "venv", ".venv", "vendor", "build", "dist",
         ".git", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache",
         "coverage", ".coverage", "htmlcov", ".tox", ".eggs",
+        ".claude", ".claude-os",
     }
 
     # File name patterns to skip (fnmatch), e.g. "*.generated.h", "*.dep.json".

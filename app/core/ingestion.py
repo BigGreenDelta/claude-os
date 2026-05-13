@@ -4,9 +4,9 @@ Handles file upload, text extraction, chunking, embedding, and storage.
 """
 
 import fnmatch
+import hashlib
 import json
 import logging
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
@@ -94,15 +94,34 @@ def ingest_file(
     """
     Ingest a single file into a knowledge base.
 
+    Skips the file if its SHA-256 hash matches what's already stored in the KB
+    (i.e. the file has not changed since last index). Uses deterministic chunk IDs
+    so re-indexing an updated file replaces existing chunks in-place.
+
     Args:
         file_path: Path to the file
         collection_name: Target collection name
         filename: Original filename
 
     Returns:
-        dict: Ingestion result with status and details
+        dict: Ingestion result with status ("success", "skipped", or "error")
     """
     try:
+        # Compute file hash for change detection
+        try:
+            file_hash = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
+        except Exception as e:
+            logger.warning(f"Could not hash {file_path}: {e}. Proceeding without hash check.")
+            file_hash = None
+
+        # Skip unchanged files
+        if file_hash:
+            db_mgr = get_sqlite_manager()
+            existing_hash = db_mgr.get_file_hash_in_kb(collection_name, str(file_path))
+            if existing_hash == file_hash:
+                logger.debug(f"Skipping unchanged file: {filename}")
+                return {"status": "skipped", "filename": filename}
+
         # Extract text
         text = extract_text_from_file(file_path)
         if not text.strip():
@@ -118,8 +137,10 @@ def ingest_file(
             "filename": filename,
             "file_type": file_ext,
             "upload_date": datetime.now().isoformat(),
-            "source_path": str(file_path)
+            "source_path": str(file_path),
         }
+        if file_hash:
+            metadata["file_hash"] = file_hash
 
         # Preprocess markdown files
         if file_ext in ['.md', '.markdown']:
@@ -171,8 +192,10 @@ def ingest_file(
                 # Generate embedding
                 embedding = embed_model.get_text_embedding(chunk_text)
 
-                # Create unique ID
-                chunk_id = f"{filename}_{chunk.metadata['chunk_index']}_{uuid.uuid4().hex[:8]}"
+                # Deterministic chunk ID — stable across re-indexing runs
+                chunk_id = hashlib.sha256(
+                    f"{file_path}:{chunk.metadata['chunk_index']}".encode()
+                ).hexdigest()[:24]
 
                 # Collect data for batch insert
                 documents.append(chunk_text)
@@ -352,7 +375,8 @@ SKIP_DIRECTORIES = {
     '.gradle',
     '.idea',
     '.vscode',
-    '.claude-os',  # Our own cache
+    '.claude-os',  # Our own config/cache
+    '.claude',     # Claude Code memory/skills
 }
 
 
@@ -442,8 +466,21 @@ def ingest_directory(
         results.append(result)
 
         if progress_callback and (((i + 1) % 50 == 0) or (i + 1) == total):
-            pct = 10 + int(((i + 1) / total) * 88)
+            pct = 10 + int(((i + 1) / total) * 78)
             progress_callback(pct, f"Indexed {i + 1}/{total} files...")
+
+    # Stale cleanup: remove docs for files no longer in the project/filter set
+    current_paths = {str(f) for f in all_files}
+    if current_paths:
+        db_manager = get_sqlite_manager()
+        deleted = db_manager.delete_docs_not_in_paths(collection_name, current_paths)
+        if deleted > 0:
+            logger.info(f"Stale cleanup: removed {deleted} docs for {collection_name} (files removed or filtered out)")
+        if progress_callback:
+            progress_callback(98, f"Cleaned up {deleted} stale docs...")
+
+    if progress_callback:
+        progress_callback(100, f"Done: {len(results)} files processed")
 
     return results
 

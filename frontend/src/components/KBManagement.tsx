@@ -27,6 +27,7 @@ export default function KBManagement({ kbName, kbSlug, kbType, projectId, projec
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(false);
   const [showIndexModal, setShowIndexModal] = useState(false);
   const [indexFull, setIndexFull] = useState(true);
+  const [clearBefore, setClearBefore] = useState(false);
   const [indexStatus, setIndexStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
   const [indexMessage, setIndexMessage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -46,7 +47,11 @@ export default function KBManagement({ kbName, kbSlug, kbType, projectId, projec
         await axios.post(`/api/kb/${kbName}/index-structural`, { project_path: projectPath });
         setIndexMessage('Structural indexing started.');
       } else {
-        await axios.post(`/api/kb/${kbName}/index-semantic`, { project_path: projectPath, selective: !indexFull });
+        await axios.post(`/api/kb/${kbName}/index-semantic`, {
+          project_path: projectPath,
+          selective: !indexFull,
+          clear_before: clearBefore,
+        });
         setIndexMessage(`${indexFull ? 'Full' : 'Selective'} semantic indexing started.`);
       }
       setIndexStatus('success');
@@ -403,7 +408,7 @@ export default function KBManagement({ kbName, kbSlug, kbType, projectId, projec
               </div>
               {isIndexable && (
                 <button
-                  onClick={() => { setShowIndexModal(true); setIndexStatus('idle'); setIndexMessage(''); }}
+                  onClick={() => { setShowIndexModal(true); setIndexStatus('idle'); setIndexMessage(''); setClearBefore(false); }}
                   className="flex items-center gap-2 px-3 py-1.5 bg-electric-teal/20 hover:bg-electric-teal/30 border border-electric-teal/50 text-electric-teal text-sm font-semibold rounded-lg transition-colors flex-shrink-0 self-start"
                 >
                   <Play className="w-4 h-4" />
@@ -437,29 +442,45 @@ export default function KBManagement({ kbName, kbSlug, kbType, projectId, projec
                 <p className="text-xs text-light-grey/60 mb-5 font-mono truncate">{kbName}</p>
 
                 {kbType === 'project_index' && (
-                  <div className="mb-5">
-                    <p className="text-sm text-light-grey mb-3">Indexing mode</p>
-                    <div className="flex items-center gap-3">
-                      <span
-                        onClick={() => setIndexFull(true)}
-                        className={`text-sm cursor-pointer select-none ${indexFull ? 'text-white font-semibold' : 'text-light-grey/60 hover:text-light-grey'}`}
-                      >Full</span>
-                      <button
-                        onClick={() => setIndexFull(f => !f)}
-                        className={`relative w-12 h-6 rounded-full transition-colors ${indexFull ? 'bg-electric-teal/30' : 'bg-electric-teal'}`}
-                        aria-label="Toggle Full/Selective"
-                      >
-                        <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${indexFull ? 'left-1' : 'left-7'}`} />
-                      </button>
-                      <span
-                        onClick={() => setIndexFull(false)}
-                        className={`text-sm cursor-pointer select-none ${!indexFull ? 'text-white font-semibold' : 'text-light-grey/60 hover:text-light-grey'}`}
-                      >Selective</span>
+                  <>
+                    <div className="mb-5">
+                      <p className="text-sm text-light-grey mb-3">Indexing mode</p>
+                      <div className="flex items-center gap-3">
+                        <span
+                          onClick={() => setIndexFull(true)}
+                          className={`text-sm cursor-pointer select-none ${indexFull ? 'text-white font-semibold' : 'text-light-grey/60 hover:text-light-grey'}`}
+                        >Full</span>
+                        <button
+                          onClick={() => setIndexFull(f => !f)}
+                          className={`relative w-12 h-6 rounded-full transition-colors ${indexFull ? 'bg-electric-teal/30' : 'bg-electric-teal'}`}
+                          aria-label="Toggle Full/Selective"
+                        >
+                          <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${indexFull ? 'left-1' : 'left-7'}`} />
+                        </button>
+                        <span
+                          onClick={() => setIndexFull(false)}
+                          className={`text-sm cursor-pointer select-none ${!indexFull ? 'text-white font-semibold' : 'text-light-grey/60 hover:text-light-grey'}`}
+                        >Selective</span>
+                      </div>
+                      <p className="text-xs text-light-grey/50 mt-2">
+                        {indexFull ? 'Re-indexes all files in the project.' : 'Indexes the top 20% most important files + documentation.'}
+                      </p>
                     </div>
-                    <p className="text-xs text-light-grey/50 mt-2">
-                      {indexFull ? 'Re-indexes all files in the project.' : 'Indexes the top 20% most important files + documentation.'}
-                    </p>
-                  </div>
+
+                    {/* Full cleanup checkbox */}
+                    <label className="flex items-start gap-2 mb-5 cursor-pointer select-none group">
+                      <input
+                        type="checkbox"
+                        checked={clearBefore}
+                        onChange={e => setClearBefore(e.target.checked)}
+                        className="mt-0.5 accent-electric-teal"
+                      />
+                      <span className="text-sm text-light-grey group-hover:text-white transition-colors">
+                        Full cleanup before indexing
+                        <span className="block text-xs text-light-grey/50 mt-0.5">Removes all existing docs first. Forces re-embedding of every file (slower).</span>
+                      </span>
+                    </label>
+                  </>
                 )}
 
                 {indexStatus === 'success' && (

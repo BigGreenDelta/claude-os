@@ -883,6 +883,7 @@ class SemanticIndexRequest(BaseModel):
     selective: bool = True  # Only index top 20% + docs
     personalization: Optional[Dict[str, float]] = None
     background: bool = True  # Run in background (True) or sync/blocking (False)
+    clear_before: bool = False  # Wipe all existing docs in KB before indexing
 
 
 @app.post("/api/kb/{kb_name}/index-structural")
@@ -988,7 +989,7 @@ async def api_index_structural(kb_name: str, request: StructuralIndexRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _run_semantic_indexing_background(job_id: str, kb_name: str, project_path: str, selective: bool, personalization: dict = None):
+def _run_semantic_indexing_background(job_id: str, kb_name: str, project_path: str, selective: bool, personalization: dict = None, clear_before: bool = False):
     """
     Background worker for semantic indexing. Runs in a separate thread to avoid blocking.
     Updates INDEXING_JOBS with progress.
@@ -1012,6 +1013,14 @@ def _run_semantic_indexing_background(job_id: str, kb_name: str, project_path: s
         logger.info(f"[Job {job_id}] Starting semantic indexing for {kb_name} at {project_path}")
         start_time = time.time()
         update_job("running", 0, "Starting indexing...")
+
+        # Optional: wipe all existing docs before indexing
+        if clear_before:
+            from app.core.sqlite_manager import get_sqlite_manager as _get_db
+            _db = _get_db()
+            cleared = _db.clear_documents(kb_name)
+            logger.info(f"[Job {job_id}] Cleared {cleared} existing docs before indexing")
+            update_job("running", 2, f"Cleared {cleared} existing docs...")
 
         if selective:
             # Load repo map if exists
@@ -1082,7 +1091,7 @@ def _run_semantic_indexing_background(job_id: str, kb_name: str, project_path: s
         update_job("failed", 0, "", str(e))
 
 
-def _run_semantic_indexing_sync(kb_name: str, project_path: str, selective: bool, personalization: dict = None) -> dict:
+def _run_semantic_indexing_sync(kb_name: str, project_path: str, selective: bool, personalization: dict = None, clear_before: bool = False) -> dict:
     """
     Synchronous semantic indexing for backward compatibility.
     WARNING: This blocks the server! Use background=true for production.
@@ -1092,6 +1101,12 @@ def _run_semantic_indexing_sync(kb_name: str, project_path: str, selective: bool
     from app.core.ingestion import ingest_directory, ingest_file
 
     start_time = time.time()
+
+    # Optional: wipe all existing docs before indexing
+    if clear_before:
+        from app.core.sqlite_manager import get_sqlite_manager as _get_db
+        cleared = _get_db().clear_documents(kb_name)
+        logger.info(f"Cleared {cleared} existing docs before sync indexing of {kb_name}")
 
     if selective:
         cache_path = str(Path(project_path) / ".claude-os" / "tree_sitter_cache.db")
@@ -1181,7 +1196,8 @@ async def api_index_semantic(kb_name: str, request: SemanticIndexRequest, backgr
                 kb_name,
                 request.project_path,
                 request.selective,
-                request.personalization
+                request.personalization,
+                request.clear_before
             )
             return result
         except Exception as e:
@@ -1212,7 +1228,8 @@ async def api_index_semantic(kb_name: str, request: SemanticIndexRequest, backgr
         kb_name,
         request.project_path,
         request.selective,
-        request.personalization
+        request.personalization,
+        request.clear_before
     )
 
     logger.info(f"Queued semantic indexing job {job_id} for {kb_name}")
