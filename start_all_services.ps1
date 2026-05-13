@@ -226,10 +226,14 @@ if ($redisOk) {
     $rqExe = Join-Path (Split-Path $VenvPython) "rq.exe"
     if (-not (Test-Path $rqExe)) { $rqExe = Join-Path (Split-Path $VenvPython) "rq" }
 
+    # Build Redis URL — use WSL IP if Redis is running in WSL
+    $redisUrl = "redis://$($script:RedisHost):6379"
+
     $workerProcess = Start-Process $rqExe `
-        -ArgumentList "worker claude-os:learning claude-os:prompts claude-os:ingest" `
+        -ArgumentList "worker", "--url", $redisUrl, "claude-os:learning", "claude-os:prompts", "claude-os:ingest" `
         -RedirectStandardOutput $workersLog `
         -RedirectStandardError "$workersLog.err" `
+        -WorkingDirectory $McpServerDir `
         -WindowStyle Hidden `
         -PassThru
 
