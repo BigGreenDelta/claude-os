@@ -18,6 +18,7 @@ Author: Claude (for Claude!)
 """
 
 import logging
+import os
 import sqlite3
 import time
 from collections import defaultdict
@@ -676,9 +677,8 @@ class TreeSitterIndexer:
         project_config_path = project_root / ".claude-os" / "config.json"
         if project_config_path.exists():
             try:
-                import json as _json
                 with open(project_config_path) as _f:
-                    _cfg = _json.load(_f)
+                    _cfg = json.load(_f)
                 _extra = set(_cfg.get("skip_dirs", []))
                 if _extra:
                     self.SKIP_DIRS = self.SKIP_DIRS | _extra
@@ -690,27 +690,25 @@ class TreeSitterIndexer:
         all_tags = []
         file_count = 0
 
-        # Find all files
-        for file_path in project_root.rglob("*"):
-            # Skip directories
-            if file_path.is_dir():
-                continue
+        # Find all files — prune skip_dirs in-place so os.walk never descends into them
+        for dirpath, dirs, files in os.walk(project_root):
+            # Prune: remove skipped dir names before os.walk recurses into them
+            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
 
-            # Skip if in skip dirs
-            if any(skip_dir in file_path.parts for skip_dir in self.SKIP_DIRS):
-                continue
+            for filename in files:
+                file_path = Path(dirpath) / filename
 
-            # Skip non-code files
-            if file_path.suffix.lower() not in self.LANGUAGE_MAP:
-                continue
+                # Skip non-code files
+                if file_path.suffix.lower() not in self.LANGUAGE_MAP:
+                    continue
 
-            # Parse file
-            tags = self.parse_file(file_path, project_root)
-            all_tags.extend(tags)
-            file_count += 1
+                # Parse file
+                tags = self.parse_file(file_path, project_root)
+                all_tags.extend(tags)
+                file_count += 1
 
-            if file_count % 100 == 0:
-                logger.info(f"Processed {file_count} files, {len(all_tags)} symbols...")
+                if file_count % 100 == 0:
+                    logger.info(f"Processed {file_count} files, {len(all_tags)} symbols...")
 
         # Build dependency graph
         logger.info("Building dependency graph...")
