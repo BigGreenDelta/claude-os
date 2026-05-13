@@ -3,11 +3,13 @@ Document ingestion pipeline for Claude OS.
 Handles file upload, text extraction, chunking, embedding, and storage.
 """
 
+import fnmatch
+import json
 import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional, Set
 
 import fitz  # PyMuPDF
 from llama_index.core import Document, Settings
@@ -354,29 +356,55 @@ SKIP_DIRECTORIES = {
 }
 
 
-def should_skip_path(file_path: Path) -> bool:
-    """Check if a file path should be skipped based on directory exclusions."""
+def should_skip_path(
+    file_path: Path,
+    extra_skip_dirs: Optional[Set[str]] = None,
+    skip_file_patterns: Optional[Set[str]] = None,
+) -> bool:
+    """Check if a file path should be skipped based on directory/file exclusions.
+
+    Supports fnmatch glob patterns in both skip sets.
+    """
+    combined_skip_dirs = SKIP_DIRECTORIES | (extra_skip_dirs or set())
     for part in file_path.parts:
-        if part in SKIP_DIRECTORIES:
-            return True
-        # Handle wildcard patterns like *.egg-info
-        for pattern in SKIP_DIRECTORIES:
-            if '*' in pattern and part.endswith(pattern.replace('*', '')):
+        for pattern in combined_skip_dirs:
+            if fnmatch.fnmatch(part, pattern):
                 return True
+
+    if skip_file_patterns and file_path.is_file():
+        for pattern in skip_file_patterns:
+            if fnmatch.fnmatch(file_path.name, pattern):
+                return True
+
     return False
+
+
+def _load_project_config(dir_path: Path) -> Dict:
+    """Load .claude-os/config.json from a project root, return {} if missing."""
+    config_file = dir_path / ".claude-os" / "config.json"
+    if config_file.exists():
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read project config {config_file}: {e}")
+    return {}
 
 
 def ingest_directory(
     dir_path: str,
-    collection_name: str
+    collection_name: str,
+    progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> List[Dict[str, any]]:
     """
     Recursively ingest all supported files from a directory.
-    Automatically skips common non-source directories like node_modules, .git, etc.
+    Automatically skips common non-source directories and respects per-project
+    .claude-os/config.json (skip_dirs + skip_file_patterns with glob support).
 
     Args:
         dir_path: Path to directory
         collection_name: Target collection name
+        progress_callback: Optional callable(progress_pct, message) for progress updates
 
     Returns:
         List of ingestion results
@@ -386,23 +414,36 @@ def ingest_directory(
 
     if not dir_path.exists() or not dir_path.is_dir():
         logger.error(f"Directory not found: {dir_path}")
-        return [{
-            "status": "error",
-            "error": f"Directory not found: {dir_path}"
-        }]
+        return [{"status": "error", "error": f"Directory not found: {dir_path}"}]
 
-    # Recursively find all supported files, skipping excluded directories
+    # Load per-project skip configuration
+    project_config = _load_project_config(dir_path)
+    extra_skip_dirs: Set[str] = set(project_config.get("skip_dirs", []))
+    skip_file_patterns: Set[str] = set(project_config.get("skip_file_patterns", []))
+
+    if extra_skip_dirs:
+        logger.info(f"Ingestion skip_dirs from config: {extra_skip_dirs}")
+    if skip_file_patterns:
+        logger.info(f"Ingestion skip_file_patterns from config: {skip_file_patterns}")
+
+    # Collect all candidate files first so we can report progress
+    all_files: List[Path] = []
     for file_path in dir_path.rglob("*"):
-        # Skip excluded directories
-        if should_skip_path(file_path):
+        if should_skip_path(file_path, extra_skip_dirs, skip_file_patterns):
             continue
         if file_path.is_file() and Config.is_supported_file(file_path.name):
-            result = ingest_file(
-                str(file_path),
-                collection_name,
-                file_path.name
-            )
-            results.append(result)
+            all_files.append(file_path)
+
+    total = len(all_files)
+    logger.info(f"Ingesting {total} files into {collection_name}")
+
+    for i, file_path in enumerate(all_files):
+        result = ingest_file(str(file_path), collection_name, file_path.name)
+        results.append(result)
+
+        if progress_callback and (((i + 1) % 50 == 0) or (i + 1) == total):
+            pct = 10 + int(((i + 1) / total) * 88)
+            progress_callback(pct, f"Indexed {i + 1}/{total} files...")
 
     return results
 

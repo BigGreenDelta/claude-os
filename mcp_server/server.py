@@ -1066,7 +1066,11 @@ def _run_semantic_indexing_background(job_id: str, kb_name: str, project_path: s
         else:
             # Full indexing (all files)
             update_job("running", 10, "Starting full directory indexing...")
-            results = ingest_directory(project_path, kb_name)
+            results = ingest_directory(
+                project_path,
+                kb_name,
+                progress_callback=lambda pct, msg: update_job("running", pct, msg),
+            )
             successes = [r for r in results if r.get("status") == "success"]
 
             elapsed = time.time() - start_time
