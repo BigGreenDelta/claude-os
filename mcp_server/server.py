@@ -2708,7 +2708,6 @@ def check_process_running(process_name: str, process_cache: list | None = None) 
         dict with status, pid, memory, cpu
     """
     try:
-        import psutil
         keywords = process_name.lower().split()
 
         if process_cache is None:
@@ -2760,7 +2759,7 @@ def _snapshot_processes() -> list:
                     "cpu_percent": info.get("cpu_percent") or 0.0,
                     "memory_percent": info.get("memory_percent") or 0.0,
                 })
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
         return snapshot
     except Exception:

@@ -57,6 +57,16 @@ Write-Host ""
 
 $env:SQLITE_DB_PATH = Join-Path $DataDir "claude-os.db"
 
+# Load .env if present; respect CLAUDE_OS_DB_PATH if set there
+$EnvFile = Join-Path $ProjectDir ".env"
+if (Test-Path $EnvFile) {
+    Get-Content $EnvFile | Where-Object { $_ -match "^[A-Z_]+=.+" } | ForEach-Object {
+        $parts = $_ -split "=", 2
+        [System.Environment]::SetEnvironmentVariable($parts[0], $parts[1], "Process")
+    }
+}
+if ($env:CLAUDE_OS_DB_PATH) { $env:SQLITE_DB_PATH = $env:CLAUDE_OS_DB_PATH }
+
 Push-Location $McpServerDir
 try {
     & $VenvPython server.py

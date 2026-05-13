@@ -129,6 +129,12 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
     } else {
         Write-Warn "UV install had issues. Trying pip..."
         & $VenvPip install -r "$ProjectDir\requirements.txt" --quiet 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-OK "Dependencies up to date (pip fallback)"
+        } else {
+            Write-Err "pip install also failed. Check your Python environment."
+            exit 1
+        }
     }
 } else {
     & $VenvPip install -r "$ProjectDir\requirements.txt" --quiet 2>&1 | Out-Null

@@ -203,7 +203,7 @@ Windows uses UV for fast Python package management and PowerShell scripts for al
 git clone https://github.com/brobertsaz/claude-os.git
 cd claude-os
 
-# If needed, allow script execution (run once as Administrator):
+# If needed, allow script execution for current user (no Administrator required):
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 # Run the Windows installer (installs UV, creates venv, sets up Ollama + Redis)

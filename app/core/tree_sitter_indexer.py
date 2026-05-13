@@ -212,27 +212,29 @@ class TreeSitterIndexer:
         ".m": "objective_c",
     }
 
-    # Directories to skip
+    # Directories to skip (default set — can be extended via extra_skip_dirs)
     SKIP_DIRS = {
         "node_modules", "venv", ".venv", "vendor", "build", "dist",
         ".git", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache",
         "coverage", ".coverage", "htmlcov", ".tox", ".eggs",
-        # Unreal Engine generated/binary dirs
-        "Binaries", "Intermediate", "DerivedDataCache", "Saved",
-        "Content",
     }
 
-    def __init__(self, cache_path: Optional[str] = None):
+    def __init__(self, cache_path: Optional[str] = None, extra_skip_dirs: Optional[set] = None):
         """
         Initialize indexer.
 
         Args:
             cache_path: Path to SQLite cache file
+            extra_skip_dirs: Additional directory names to skip during indexing.
+                Merged with the default SKIP_DIRS at construction time.
+                Example: extra_skip_dirs={"Binaries", "Content"}
         """
         if not TREE_SITTER_AVAILABLE:
             raise RuntimeError("tree_sitter_languages not installed. Run: pip install tree_sitter_languages")
 
         self.cache = TreeSitterCache(cache_path) if cache_path else None
+        if extra_skip_dirs:
+            self.SKIP_DIRS = self.SKIP_DIRS | extra_skip_dirs
 
     def parse_file(self, file_path: Path, project_root: Path) -> List[Tag]:
         """
@@ -669,6 +671,20 @@ class TreeSitterIndexer:
         """
         project_root = Path(project_path).resolve()
         logger.info(f"Indexing directory: {project_root}")
+
+        # Load per-project config from .claude-os/config.json if present
+        project_config_path = project_root / ".claude-os" / "config.json"
+        if project_config_path.exists():
+            try:
+                import json as _json
+                with open(project_config_path) as _f:
+                    _cfg = _json.load(_f)
+                _extra = set(_cfg.get("skip_dirs", []))
+                if _extra:
+                    self.SKIP_DIRS = self.SKIP_DIRS | _extra
+                    logger.info(f"Loaded project config from {project_config_path}; extra skip_dirs: {_extra}")
+            except Exception as _e:
+                logger.warning(f"Could not load project config at {project_config_path}: {_e}")
 
         start_time = time.time()
         all_tags = []
